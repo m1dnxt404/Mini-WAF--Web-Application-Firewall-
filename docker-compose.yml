@@ -62,6 +62,15 @@ services:
     networks:
       - waf_network
 
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "3000:80"
+    depends_on:
+      - waf
+    networks:
+      - waf_network
+
   nginx:
     image: nginx:alpine
     ports:

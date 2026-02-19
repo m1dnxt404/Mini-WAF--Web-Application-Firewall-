@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     WAF_HOST: str = "0.0.0.0"
     WAF_PORT: int = 8000
     THREAT_SCORE_THRESHOLD: int = 50
+    CORS_ORIGINS: str = "http://localhost:3000"
 
     POSTGRES_USER: str = "waf_user"
     POSTGRES_PASSWORD: str = "waf_password"

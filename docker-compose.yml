@@ -17,6 +17,21 @@ services:
     networks:
       - waf_network
 
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - waf_network
+
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -61,6 +76,7 @@ services:
 
 volumes:
   postgres_data:
+  pgadmin_data: 
 
 networks:
   waf_network:

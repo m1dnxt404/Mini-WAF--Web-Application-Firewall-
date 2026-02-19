@@ -1,0 +1,25 @@
+mini_waf_schema_and_roadmap.md
+mini_waf_architecture.md
+Setup_docker_Redis.md
+.cache/
+dist/
+build/
+*.egg-info/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.log
+*.bak
+
+.claude/
+.vscode/
+.idea/
+.DS_Store
+
+please read the mini_waf_architecture.md and mini_waf_schema_and_roadmap.md,then plan for the first day
+
+- Setup project structure
+- Configure Docker + Docker Compose
+- Setup PostgreSQL & Redis containers
+- Basic FastAPI

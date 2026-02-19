@@ -1,38 +1,43 @@
 # Mini WAF — Web Application Firewall
 
 A containerized, rule-based reverse-proxy Web Application Firewall built with
-FastAPI, PostgreSQL, and Redis. Inspects incoming HTTP traffic, applies threat
-scoring, rate limiting, and configurable detection rules before forwarding
-requests to the backend.
+FastAPI, PostgreSQL, Redis, and a React admin dashboard. Inspects incoming HTTP
+traffic, applies threat scoring, rate limiting, and configurable detection rules
+before forwarding requests to the backend.
 
 ---
 
 ## Architecture
 
 ```text
-Client → NGINX (port 80) → WAF Service (port 8000) → Backend API (port 8001)
+Browser → Dashboard (port 3000)
+               ↕ REST / WebSocket
+Client → NGINX (port 80) → WAF (port 8000) → Backend API (port 8001)
                                     ↓
-                           PostgreSQL + Redis
+                          PostgreSQL + Redis
 ```
 
 The WAF sits as a **dedicated proxy layer** between NGINX and the backend.
-Every request is inspected, scored, and logged before being forwarded.
+Every request is inspected, scored, and logged before forwarding.
+The dashboard connects directly to the WAF API and WebSocket for real-time monitoring.
 
 ---
 
 ## Tech Stack
 
-| Layer          | Technology                              |
-|----------------|-----------------------------------------|
-| WAF Engine     | FastAPI + Uvicorn (Python 3.11)         |
-| Reverse Proxy  | NGINX                                   |
-| Database       | PostgreSQL 15 (attack logs, rules, IPs) |
-| Cache          | Redis 7 (rate limiting, threat cache)   |
-| ORM            | SQLAlchemy 2.0 (async)                  |
-| Migrations     | Alembic                                 |
-| Config         | pydantic-settings                       |
-| Infrastructure | Docker + Docker Compose                 |
-| Dashboard      | React + Tailwind + Recharts (Week 2)    |
+| Layer          | Technology                                      |
+|----------------|-------------------------------------------------|
+| WAF Engine     | FastAPI + Uvicorn (Python 3.11)                 |
+| Reverse Proxy  | NGINX                                           |
+| Database       | PostgreSQL 15 (attack logs, rules, IP data)     |
+| Cache          | Redis 7 (rate limiting, threat score cache)     |
+| ORM            | SQLAlchemy 2.0 (async + asyncpg)                |
+| Migrations     | Alembic (async mode)                            |
+| Config         | pydantic-settings                               |
+| Dashboard      | React 18 + Vite + TypeScript + Tailwind CSS v3  |
+| Charts         | Recharts (PieChart, AreaChart)                  |
+| Real-time      | WebSocket (`/ws/logs`)                          |
+| Infrastructure | Docker + Docker Compose                         |
 
 ---
 
@@ -40,27 +45,56 @@ Every request is inspected, scored, and logged before being forwarded.
 
 ```text
 mini-waf/
-├── waf/                        # WAF engine service
+├── waf/                           # WAF engine service
 │   ├── app/
-│   │   ├── main.py             # FastAPI app, lifespan, health endpoints
+│   │   ├── main.py                # FastAPI app, CORS, routers, WebSocket, lifespan
 │   │   ├── core/
-│   │   │   ├── config.py       # Settings via pydantic-settings
-│   │   │   └── database.py     # Async SQLAlchemy engine + session
+│   │   │   ├── config.py          # Settings via pydantic-settings
+│   │   │   └── database.py        # Async SQLAlchemy engine + session
+│   │   ├── api/
+│   │   │   ├── logs.py            # GET /api/logs, GET /api/stats
+│   │   │   ├── rules.py           # GET /api/rules, PATCH /api/rules/{id}/toggle
+│   │   │   ├── blocked_ips.py     # GET /api/blocked-ips, DELETE /api/blocked-ips/{ip}
+│   │   │   └── ws.py              # ConnectionManager (WebSocket broadcast)
 │   │   └── models/
-│   │       └── models.py       # ORM models (4 tables)
-│   ├── alembic/                # Database migrations
+│   │       └── models.py          # ORM models (4 tables)
+│   ├── alembic/                   # Database migrations
 │   ├── alembic.ini
 │   ├── requirements.txt
 │   └── Dockerfile
-├── backend/                    # Dummy target backend API
+├── dashboard/                     # React admin dashboard
+│   ├── src/
+│   │   ├── App.tsx                # BrowserRouter + layout shell
+│   │   ├── main.tsx               # React entry point
+│   │   ├── index.css              # Tailwind directives
+│   │   ├── lib/api.ts             # Typed fetch wrappers for WAF endpoints
+│   │   ├── hooks/useWebSocket.ts  # Auto-reconnecting WS, 100-entry cap, pause
+│   │   ├── components/
+│   │   │   ├── Sidebar.tsx        # Nav with active link highlighting
+│   │   │   ├── StatCard.tsx       # Reusable metric card
+│   │   │   ├── LogsTable.tsx      # Color-coded attack log rows
+│   │   │   ├── ThreatPieChart.tsx # Recharts donut chart
+│   │   │   └── TimelineChart.tsx  # Recharts area chart (requests/hour)
+│   │   └── pages/
+│   │       ├── Overview.tsx       # Stats + charts + top IPs, auto-refreshes 10s
+│   │       ├── LiveLogs.tsx       # Real-time WS feed + Pause/Resume
+│   │       ├── Rules.tsx          # Rule list with enable/disable toggles
+│   │       └── BlockedIPs.tsx     # Blocked IP list with Unblock action
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── tailwind.config.js
+│   ├── tsconfig.json
+│   └── Dockerfile                 # Multi-stage: node:20 build → nginx:alpine serve
+├── backend/                       # Dummy target backend API
 │   ├── app/main.py
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── nginx/
-│   └── nginx.conf              # Routes port 80 → WAF
-├── docker-compose.yml
-├── .env                        # Local secrets (not committed)
-└── .env.example                # Template for environment variables
+│   └── nginx.conf                 # Routes port 80 → WAF
+├── docker-compose.yml             # 7 services
+├── .env                           # Local secrets (not committed)
+├── .env.example                   # Template for environment variables
+└── Setup_docker_Redis.md          # PostgreSQL + pgAdmin4 + Redis setup guide
 ```
 
 ---
@@ -98,57 +132,97 @@ docker compose ps
 NAME        STATUS                  PORTS
 postgres    Up (healthy)            5432/tcp
 redis       Up (healthy)            6379/tcp
+pgadmin     Up                      0.0.0.0:5050->80/tcp
 waf         Up                      0.0.0.0:8000->8000/tcp
 backend     Up                      0.0.0.0:8001->8001/tcp
+dashboard   Up                      0.0.0.0:3000->80/tcp
 nginx       Up                      0.0.0.0:80->80/tcp
 ```
 
-### 4. Check health
+### 4. Access the services
 
-```bash
-curl http://localhost/health
-# {"status": "ok", "service": "mini-waf"}
-
-curl http://localhost/ready
-# {"db": "ok", "redis": "ok"}
-```
+| Service           | URL                                                     |
+|-------------------|---------------------------------------------------------|
+| Dashboard         | [http://localhost:3000](http://localhost:3000)          |
+| WAF API (Swagger) | [http://localhost:8000/docs](http://localhost:8000/docs)|
+| pgAdmin4          | [http://localhost:5050](http://localhost:5050)          |
+| NGINX → WAF       | [http://localhost](http://localhost)                    |
 
 ---
 
-## API Endpoints (Day 1)
+## WAF API Reference
 
-| Method | Path      | Description                         |
-|--------|-----------|-------------------------------------|
-| GET    | `/health` | Service liveness check              |
-| GET    | `/ready`  | Readiness check (DB + Redis status) |
+### System
 
-> More endpoints will be added in subsequent days per the build roadmap.
+| Method | Path      | Description                          |
+|--------|-----------|--------------------------------------|
+| GET    | `/health` | Service liveness check               |
+| GET    | `/ready`  | Readiness check (DB + Redis status)  |
+
+### Attack Logs
+
+| Method | Path         | Description                                           |
+|--------|--------------|-------------------------------------------------------|
+| GET    | `/api/logs`  | List attack logs, newest first (`limit`, `offset`)    |
+| GET    | `/api/stats` | Totals, top IPs, threat distribution, hourly timeline |
+
+### Rules
+
+| Method | Path                        | Description                    |
+|--------|-----------------------------|--------------------------------|
+| GET    | `/api/rules`                | List all WAF rules             |
+| PATCH  | `/api/rules/{id}/toggle`    | Enable / disable a rule        |
+
+### Blocked IPs
+
+| Method | Path                        | Description                    |
+|--------|-----------------------------|--------------------------------|
+| GET    | `/api/blocked-ips`          | List all blocked IPs           |
+| DELETE | `/api/blocked-ips/{ip}`     | Unblock an IP address          |
+
+### WebSocket
+
+| Protocol | Path       | Description                                                    |
+|----------|------------|----------------------------------------------------------------|
+| WS       | `/ws/logs` | Push `{"type":"new_log","data":{...}}` on each new attack log  |
+
+---
+
+## Dashboard Pages
+
+| Page         | Route           | Description                                          |
+|--------------|-----------------|------------------------------------------------------|
+| Overview     | `/`             | 4 stat cards, threat pie chart, timeline, top IPs    |
+| Live Logs    | `/live-logs`    | Real-time WebSocket feed, color-coded rows, Pause    |
+| Rules        | `/rules`        | Enable/disable rules with toggle switches            |
+| Blocked IPs  | `/blocked-ips`  | View and unblock IPs from the blocklist              |
 
 ---
 
 ## Database Schema
 
-Four PostgreSQL tables are auto-created on WAF startup via SQLAlchemy:
+Four PostgreSQL tables are auto-created on WAF startup via `init_db()`:
 
 | Table            | Purpose                                      |
 |------------------|----------------------------------------------|
 | `attack_logs`    | Every inspected request with threat score    |
 | `waf_rules`      | Configurable regex-based detection rules     |
-| `blocked_ips`    | Permanently blocked IPs with optional expiry |
+| `blocked_ips`    | Permanently or temporarily blocked IPs       |
 | `ip_rate_limits` | Per-IP sliding window request counters       |
 
 ---
 
 ## Environment Variables
 
-| Variable                 | Default                                              | Description                  |
-|--------------------------|------------------------------------------------------|------------------------------|
-| `DATABASE_URL`           | `postgresql+asyncpg://waf_user:waf_password@...`     | Async PostgreSQL URL         |
-| `REDIS_URL`              | `redis://redis:6379/0`                               | Redis connection URL         |
-| `BACKEND_URL`            | `http://backend:8001`                                | Target backend URL           |
-| `THREAT_SCORE_THRESHOLD` | `50`                                                 | Score to trigger a block     |
-| `PGADMIN_EMAIL`          | `admin@waf.local`                                    | pgAdmin4 login email         |
-| `PGADMIN_PASSWORD`       | `admin_password`                                     | pgAdmin4 login password      |
+| Variable                 | Default                                          | Description                     |
+|--------------------------|--------------------------------------------------|---------------------------------|
+| `DATABASE_URL`           | `postgresql+asyncpg://waf_user:...@postgres/...` | Async PostgreSQL connection URL |
+| `REDIS_URL`              | `redis://redis:6379/0`                           | Redis connection URL            |
+| `BACKEND_URL`            | `http://backend:8001`                            | Target backend service URL      |
+| `THREAT_SCORE_THRESHOLD` | `50`                                             | Score ceiling before block      |
+| `CORS_ORIGINS`           | `http://localhost:3000`                          | Allowed CORS origins (CSV)      |
+| `PGADMIN_EMAIL`          | `admin@waf.local`                                | pgAdmin4 login email            |
+| `PGADMIN_PASSWORD`       | `admin_password`                                 | pgAdmin4 login password         |
 
 ---
 
@@ -156,14 +230,12 @@ Four PostgreSQL tables are auto-created on WAF startup via SQLAlchemy:
 
 > See [Setup_docker_Redis.md](Setup_docker_Redis.md) for full setup instructions.
 
-Add `pgadmin` service to `docker-compose.yml`, then access at:
-[http://localhost:5050](http://localhost:5050)
+Access at [http://localhost:5050](http://localhost:5050) — connect with:
 
-Connection settings:
-- Host: `postgres`
-- Port: `5432`
-- Database: `waf_db`
-- Username: `waf_user`
+- **Host:** `postgres` (Docker service name, not `localhost`)
+- **Port:** `5432`
+- **Database:** `waf_db`
+- **Username:** `waf_user`
 
 ---
 
@@ -171,21 +243,21 @@ Connection settings:
 
 ### Week 1 — Core WAF Engine
 
-| Days  | Task                                               | Status      |
-|-------|----------------------------------------------------|-------------|
-| 1–2   | Project setup, Docker, PostgreSQL, Redis, FastAPI  | ✅ Done      |
-| 3–4   | Reverse proxy — forward requests, capture metadata | ⬜ Pending  |
-| 5     | Rule Engine — load JSON rules, regex matching      | ⬜ Pending  |
-| 6–7   | Threat Scoring Engine + PostgreSQL logging         | ⬜ Pending  |
+| Days  | Task                                               | Status     |
+|-------|----------------------------------------------------|------------|
+| 1–2   | Project setup, Docker, PostgreSQL, Redis, FastAPI  | ✅ Done    |
+| 3–4   | Reverse proxy — forward requests, capture metadata | ⬜ Pending |
+| 5     | Rule Engine — load JSON rules, regex matching      | ⬜ Pending |
+| 6–7   | Threat Scoring Engine + PostgreSQL logging         | ⬜ Pending |
 
 ### Week 2 — Protection Features
 
-| Days  | Task                                               | Status      |
-|-------|----------------------------------------------------|-------------|
-| 8–9   | Redis rate limiting (sliding window)               | ⬜ Pending  |
-| 10    | Persistent IP blacklist + auto-block               | ⬜ Pending  |
-| 11–12 | Admin API (rules, IPs, threshold management)       | ⬜ Pending  |
-| 13–14 | React dashboard with real-time WebSocket logs      | ⬜ Pending  |
+| Days  | Task                                               | Status     |
+|-------|----------------------------------------------------|------------|
+| 8–9   | Redis rate limiting (sliding window)               | ⬜ Pending |
+| 10    | Persistent IP blacklist + auto-block               | ⬜ Pending |
+| 11–12 | Admin API (rules, IPs, threshold management)       | ✅ Done    |
+| 13–14 | React dashboard with real-time WebSocket logs      | ✅ Done    |
 
 ### Week 3 — Advanced (Optional)
 
@@ -200,8 +272,11 @@ Connection settings:
 ## Useful Commands
 
 ```bash
-# View WAF logs
+# View WAF logs in real-time
 docker compose logs -f waf
+
+# View dashboard build logs
+docker compose logs -f dashboard
 
 # Open psql shell
 docker compose exec postgres psql -U waf_user -d waf_db
@@ -209,14 +284,20 @@ docker compose exec postgres psql -U waf_user -d waf_db
 # Open Redis CLI
 docker compose exec redis redis-cli
 
-# Rebuild WAF after code changes
+# Rebuild WAF after Python changes
 docker compose up --build waf -d
 
-# Stop all services
+# Rebuild dashboard after React changes
+docker compose up --build dashboard -d
+
+# Stop all services (data preserved)
 docker compose down
 
-# Stop and wipe all data
+# Stop all services and wipe data volumes
 docker compose down -v
+
+# Run Alembic migrations
+docker compose exec waf alembic upgrade head
 ```
 
 ---

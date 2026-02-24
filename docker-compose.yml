@@ -91,8 +91,8 @@ services:
       - waf_network
 
 volumes:
-  postgres_data:
-  pgadmin_data: 
+  waf_postgres_data:
+  waf_pgadmin_data: 
 
 networks:
   waf_network:

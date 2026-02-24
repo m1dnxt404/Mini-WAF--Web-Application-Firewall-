@@ -52,6 +52,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - waf_network
 
@@ -67,7 +73,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - waf
+      waf:
+        condition: service_healthy
     networks:
       - waf_network
 
@@ -78,8 +85,8 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - waf
-      - backend
+      waf:
+        condition: service_healthy
     networks:
       - waf_network
 

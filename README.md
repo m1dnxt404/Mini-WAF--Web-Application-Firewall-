@@ -47,7 +47,9 @@ The dashboard connects directly to the WAF API and WebSocket for real-time monit
 mini-waf/
 ├── waf/                           # WAF engine service
 │   ├── app/
-│   │   ├── main.py                # FastAPI app, CORS, routers, WebSocket, lifespan
+│   │   ├── main.py                # FastAPI app, CORS, routers, WebSocket, proxy catch-all
+│   │   ├── engine.py              # WAF inspection — regex rule matching + threat scoring
+│   │   ├── seed.py                # Default WAF rules seeded on first startup
 │   │   ├── core/
 │   │   │   ├── config.py          # Settings via pydantic-settings
 │   │   │   └── database.py        # Async SQLAlchemy engine + session
@@ -80,6 +82,7 @@ mini-waf/
 │   │       ├── LiveLogs.tsx       # Real-time WS feed + Pause/Resume
 │   │       ├── Rules.tsx          # Rule list with enable/disable toggles
 │   │       └── BlockedIPs.tsx     # Blocked IP list with Unblock action
+│   ├── nginx.conf                 # nginx server block (React Router fallback)
 │   ├── package.json
 │   ├── vite.config.ts
 │   ├── tailwind.config.js
@@ -246,9 +249,9 @@ Access at [http://localhost:5050](http://localhost:5050) — connect with:
 | Days  | Task                                               | Status     |
 |-------|----------------------------------------------------|------------|
 | 1–2   | Project setup, Docker, PostgreSQL, Redis, FastAPI  | ✅ Done    |
-| 3–4   | Reverse proxy — forward requests, capture metadata | ⬜ Pending |
-| 5     | Rule Engine — load JSON rules, regex matching      | ⬜ Pending |
-| 6–7   | Threat Scoring Engine + PostgreSQL logging         | ⬜ Pending |
+| 3–4   | Reverse proxy — forward requests, capture metadata | ✅ Done    |
+| 5     | Rule Engine — DB-backed regex rules, inspection    | ✅ Done    |
+| 6–7   | Threat Scoring Engine + PostgreSQL logging         | ✅ Done    |
 
 ### Week 2 — Protection Features
 
@@ -302,12 +305,50 @@ docker compose exec waf alembic upgrade head
 
 ---
 
-## Detection Capabilities (Planned)
+## Detection Capabilities
 
-- SQL Injection (SQLi)
-- Cross-Site Scripting (XSS)
-- Path Traversal
-- Command Injection
-- Suspicious Headers
-- Bot Signatures
-- Brute-force / DoS via rate limiting
+13 default rules are seeded automatically on first startup, covering:
+
+| Category          | Rules                                                              |
+|-------------------|--------------------------------------------------------------------|
+| SQL Injection     | UNION SELECT, tautology (OR 1=1), stacked queries, inline comments |
+| XSS               | `<script>` tags, inline event handlers, `javascript:` protocol     |
+| Path Traversal    | `../` sequences (raw + URL-encoded), sensitive file names          |
+| Command Injection | Shell metacharacters (`;`, `&`) and subshell `$(...)` patterns     |
+| SSRF              | Requests targeting localhost / RFC 1918 addresses                  |
+
+Rules are stored in the `waf_rules` table and can be toggled live from the
+dashboard without restarting the WAF.
+
+---
+
+## Testing the WAF
+
+All examples hit the NGINX entry point (`http://localhost`), which forwards to
+the WAF, which in turn proxies to the backend.
+
+```bash
+# 1. Normal request — should be forwarded (action: allow)
+curl -s http://localhost/
+
+# 2. SQL Injection — UNION SELECT (score 60 → block)
+curl -s "http://localhost/search?q=1'+UNION+SELECT+username,password+FROM+users--"
+
+# 3. XSS — script tag (score 60 → block)
+curl -s "http://localhost/page?msg=%3Cscript%3Ealert(1)%3C/script%3E"
+
+# 4. Path Traversal (score 50 → block)
+curl -s "http://localhost/files?path=../../etc/passwd"
+
+# 5. Command Injection (score 70 → block)
+curl -s "http://localhost/run?cmd=;cat+/etc/passwd"
+
+# 6. Check the attack log after each test
+curl -s http://localhost:8000/api/logs | python -m json.tool
+```
+
+Blocked requests return HTTP 403:
+
+```json
+{"detail": "Request blocked by WAF", "threat_types": ["SQLi"]}
+```
